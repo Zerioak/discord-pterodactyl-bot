@@ -1,5 +1,5 @@
 """
-main.py  –  Pterodactyl Admin Discord Bot entry-point.
+main.py – Pterodactyl Admin Discord Bot entry-point.
 """
 
 from __future__ import annotations
@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import itertools
+import datetime
 
 import discord
 from discord.ext import commands
@@ -14,7 +16,11 @@ from discord.ext import commands
 from config import DISCORD_TOKEN, OWNER_ID, BOT_NAME, BOT_VERSION
 from api_client import PterodactylClient
 
-# ── Logging ──────────────────────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════
+# LOGGING
+# ═══════════════════════════════════════════════════════════════
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -22,27 +28,45 @@ logging.basicConfig(
 )
 log = logging.getLogger("ptero-bot")
 
-# ── Guard ────────────────────────────────────────────────────────────────────────
+
+# ═══════════════════════════════════════════════════════════════
+# ENV CHECK
+# ═══════════════════════════════════════════════════════════════
+
 if not DISCORD_TOKEN:
     log.critical("DISCORD_TOKEN is missing from .env — aborting.")
     sys.exit(1)
+
 if not OWNER_ID:
     log.critical("OWNER_ID is missing from .env — aborting.")
     sys.exit(1)
 
 
-# ── Bot ──────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# BOT CLASS
+# ═══════════════════════════════════════════════════════════════
+
 class PterodactylBot(commands.Bot):
     """Custom Bot that exposes a shared Pterodactyl API client to every cog."""
 
     def __init__(self):
         intents = discord.Intents.default()
-        super().__init__(command_prefix="!", intents=intents, help_command=None)
-        self.ptero    = PterodactylClient()
+        super().__init__(
+            command_prefix="!",
+            intents=intents,
+            help_command=None,
+        )
+
+        self.ptero = PterodactylClient()
         self.owner_id = OWNER_ID
 
-    # ── Load cogs + sync ─────────────────────────────────────────────────────────
+
+    # ────────────────────────────────────────────────────────────
+    # LOAD COGS + SYNC COMMANDS
+    # ────────────────────────────────────────────────────────────
+
     async def setup_hook(self):
+
         cogs = [
             "cogs.help",
             "cogs.nodes",
@@ -54,6 +78,7 @@ class PterodactylBot(commands.Bot):
             "cogs.servers",
             "cogs.roles",
         ]
+
         for cog in cogs:
             try:
                 await self.load_extension(cog)
@@ -64,26 +89,55 @@ class PterodactylBot(commands.Bot):
         synced = await self.tree.sync()
         log.info(f"Synced {len(synced)} slash commands globally.")
 
+
+    # ────────────────────────────────────────────────────────────
+    # READY EVENT + ROTATING STATUS
+    # ────────────────────────────────────────────────────────────
+
     async def on_ready(self):
         log.info(f"Logged in as {self.user} (ID: {self.user.id})")
         log.info(f"{BOT_NAME} v{BOT_VERSION} is online.")
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching, name="Pterodactyl Panel"
-            )
-        )
+
+        activities = itertools.cycle([
+            discord.Activity(
+                type=discord.ActivityType.watching,
+                name="Pterodactyl Panel | Made by Zerioak"
+            ),
+            discord.Game("Minecraft"),
+        ])
+
+        async def rotate_status():
+            await self.wait_until_ready()
+
+            while not self.is_closed():
+                activity = next(activities)
+                await self.change_presence(
+                    status=discord.Status.idle,
+                    activity=activity
+                )
+                await asyncio.sleep(15)
+
+        self.loop.create_task(rotate_status())
+
+
+    # ────────────────────────────────────────────────────────────
+    # CLEAN SHUTDOWN
+    # ────────────────────────────────────────────────────────────
 
     async def close(self):
         await self.ptero.close()
         await super().close()
 
-    # ── Global slash-command error handler ───────────────────────────────────────
+
+    # ────────────────────────────────────────────────────────────
+    # GLOBAL SLASH COMMAND ERROR HANDLER
+    # ────────────────────────────────────────────────────────────
+
     async def on_app_command_error(
         self,
         interaction: discord.Interaction,
         error: discord.app_commands.AppCommandError,
     ):
-        import datetime
         from config import Colors, FOOTER_TEXT
 
         embed = discord.Embed(
@@ -108,7 +162,10 @@ class PterodactylBot(commands.Bot):
             pass
 
 
-# ── Run ──────────────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════
+# RUN
+# ═══════════════════════════════════════════════════════════════
+
 async def main():
     bot = PterodactylBot()
     async with bot:
