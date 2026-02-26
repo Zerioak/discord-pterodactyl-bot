@@ -179,6 +179,5 @@ V2 (COMING SOON 🚀)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-👑 MAINTAINED BY
-
-HYDRFL GAMING
+# OWNER
+Made with ❤️ with Zerioak
