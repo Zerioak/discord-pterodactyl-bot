@@ -180,4 +180,4 @@ V2 (COMING SOON 🚀)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 # OWNER
-Made with ❤️ with Zerioak
+Made with ❤️ by Zerioak
