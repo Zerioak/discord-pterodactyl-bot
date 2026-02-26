@@ -1,6 +1,6 @@
 """
 api_client.py
-Async Pterodactyl Application API client.
+FULL Production Pterodactyl Application API Client
 """
 
 from __future__ import annotations
@@ -41,10 +41,9 @@ class PterodactylClient:
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            timeout = aiohttp.ClientTimeout(total=30)
             self._session = aiohttp.ClientSession(
                 headers=self._headers(),
-                timeout=timeout,
+                timeout=aiohttp.ClientTimeout(total=30),
             )
         return self._session
 
@@ -52,14 +51,14 @@ class PterodactylClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    # ───────── REQUEST ─────────
+    # ───────── CORE REQUEST ─────────
 
     async def _request(
         self,
         method: str,
         endpoint: str,
-        payload: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,
+        payload: Optional[Dict] = None,
+        params: Optional[Dict] = None,
     ) -> Any:
 
         session = await self._get_session()
@@ -88,14 +87,16 @@ class PterodactylClient:
 
     # ───────── PAGINATION ─────────
 
-    async def _paginate(self, endpoint: str, params: Optional[Dict] = None) -> List[Dict]:
-
-        results: List[Dict] = []
+    async def _paginate(self, endpoint: str) -> List[Dict]:
+        results = []
         page = 1
 
         while True:
-            query = {"per_page": 100, "page": page, **(params or {})}
-            data = await self._request("GET", endpoint, params=query)
+            data = await self._request(
+                "GET",
+                endpoint,
+                params={"page": page, "per_page": 100},
+            )
 
             results.extend(data.get("data", []))
 
@@ -106,6 +107,109 @@ class PterodactylClient:
             page += 1
 
         return results
+
+
+    # ═══════════════════════════════════════════════════════════════
+    # NODES
+    # ═══════════════════════════════════════════════════════════════
+
+    async def list_nodes(self) -> List[Dict]:
+        return await self._paginate("/nodes")
+
+    async def get_node(self, node_id: int) -> Dict:
+        return await self._request("GET", f"/nodes/{node_id}")
+
+    async def create_node(self, payload: Dict) -> Dict:
+        return await self._request("POST", "/nodes", payload)
+
+    async def update_node(self, node_id: int, payload: Dict) -> Dict:
+        return await self._request("PATCH", f"/nodes/{node_id}", payload)
+
+    async def delete_node(self, node_id: int) -> Dict:
+        return await self._request("DELETE", f"/nodes/{node_id}")
+
+    # Allocations
+
+    async def list_allocations(self, node_id: int) -> List[Dict]:
+        return await self._paginate(f"/nodes/{node_id}/allocations")
+
+    async def create_allocation(self, node_id: int, payload: Dict) -> Dict:
+        return await self._request("POST", f"/nodes/{node_id}/allocations", payload)
+
+    async def delete_allocation(self, node_id: int, alloc_id: int) -> Dict:
+        return await self._request("DELETE", f"/nodes/{node_id}/allocations/{alloc_id}")
+
+
+    # ═══════════════════════════════════════════════════════════════
+    # NESTS & EGGS
+    # ═══════════════════════════════════════════════════════════════
+
+    async def list_nests(self) -> List[Dict]:
+        return await self._paginate("/nests")
+
+    async def get_nest(self, nest_id: int) -> Dict:
+        return await self._request("GET", f"/nests/{nest_id}")
+
+    async def list_eggs(self, nest_id: int) -> List[Dict]:
+        return await self._paginate(f"/nests/{nest_id}/eggs")
+
+    async def get_egg(self, nest_id: int, egg_id: int) -> Dict:
+        return await self._request(
+            "GET",
+            f"/nests/{nest_id}/eggs/{egg_id}",
+            params={"include": "variables,nest,servers,config,script"},
+        )
+
+    async def list_all_eggs(self) -> List[Dict]:
+        nests = await self.list_nests()
+        eggs: List[Dict] = []
+
+        for nest in nests:
+            nid = nest["attributes"]["id"]
+            eggs.extend(await self.list_eggs(nid))
+
+        return eggs
+
+
+    # ═══════════════════════════════════════════════════════════════
+    # MOUNTS
+    # ═══════════════════════════════════════════════════════════════
+
+    async def list_mounts(self) -> List[Dict]:
+        return await self._paginate("/mounts")
+
+    async def get_mount(self, mount_id: int) -> Dict:
+        return await self._request("GET", f"/mounts/{mount_id}")
+
+    async def create_mount(self, payload: Dict) -> Dict:
+        return await self._request("POST", "/mounts", payload)
+
+    async def update_mount(self, mount_id: int, payload: Dict) -> Dict:
+        return await self._request("PUT", f"/mounts/{mount_id}", payload)
+
+    async def delete_mount(self, mount_id: int) -> Dict:
+        return await self._request("DELETE", f"/mounts/{mount_id}")
+
+
+    # ═══════════════════════════════════════════════════════════════
+    # USERS
+    # ═══════════════════════════════════════════════════════════════
+
+    async def list_users(self) -> List[Dict]:
+        return await self._paginate("/users")
+
+    async def get_user(self, user_id: int) -> Dict:
+        return await self._request("GET", f"/users/{user_id}")
+
+    async def create_user(self, payload: Dict) -> Dict:
+        return await self._request("POST", "/users", payload)
+
+    async def update_user(self, user_id: int, payload: Dict) -> Dict:
+        return await self._request("PATCH", f"/users/{user_id}", payload)
+
+    async def delete_user(self, user_id: int) -> Dict:
+        return await self._request("DELETE", f"/users/{user_id}")
+
 
     # ═══════════════════════════════════════════════════════════════
     # SERVERS
@@ -136,12 +240,9 @@ class PterodactylClient:
         return await self._request("POST", f"/servers/{server_id}/reinstall")
 
     async def delete_server(self, server_id: int, force: bool = False) -> Dict:
-        endpoint = (
-            f"/servers/{server_id}/force"
-            if force
-            else f"/servers/{server_id}"
-        )
+        endpoint = f"/servers/{server_id}/force" if force else f"/servers/{server_id}"
         return await self._request("DELETE", endpoint)
+
 
     # ═══════════════════════════════════════════════════════════════
     # ROLES
