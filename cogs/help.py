@@ -1,5 +1,5 @@
 """
-cogs/help.py – Premium Interactive /help command.
+cogs/help.py – Enterprise Interactive /help command.
 """
 
 from __future__ import annotations
@@ -26,13 +26,9 @@ HELP_CATEGORIES = {
 `/nodes create`
 `/nodes edit`
 `/nodes delete`
-
-Allocations:
 `/nodes allocations`
 `/nodes create-allocations`
 `/nodes delete-allocations`
-
-Node Servers:
 `/nodes servers`
 """
     },
@@ -50,9 +46,18 @@ Node Servers:
 `/servers suspend`
 `/servers unsuspend`
 `/servers reinstall`
-
-Databases:
 `/servers databases`
+"""
+    },
+    "manage": {
+        "emoji": "🎮",
+        "title": "Live Server Control",
+        "commands": """
+`/manage`
+
+• Start / Stop / Restart / Kill
+• Live CPU / RAM / Disk stats
+• Real-time power control
 """
     },
     "users": {
@@ -116,7 +121,45 @@ Databases:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# SELECT MENU VIEW
+# EMBED BUILDERS
+# ═══════════════════════════════════════════════════════════════════════
+
+def build_home_embed():
+    total_commands = sum(
+        len(data["commands"].strip().split("\n"))
+        for data in HELP_CATEGORIES.values()
+    )
+
+    embed = make_embed(
+        title="🦅 Pterodactyl Enterprise Admin",
+        description=(
+            "**Advanced Control System**\n\n"
+            "Select a category below to view full command details.\n\n"
+            f"📊 Total Commands: **{total_commands}**\n"
+            "🔐 Access Level: Owner Only"
+        ),
+        color=Colors.INFO,
+    )
+
+    embed.set_footer(text="HYDRFL GAMING • Enterprise Panel")
+    return embed
+
+
+def build_category_embed(key: str):
+    data = HELP_CATEGORIES[key]
+
+    embed = make_embed(
+        title=f"{data['emoji']} {data['title']}",
+        description=data["commands"],
+        color=Colors.INFO
+    )
+
+    embed.set_footer(text="Enterprise Help • Secure System")
+    return embed
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# VIEW
 # ═══════════════════════════════════════════════════════════════════════
 
 class HelpSelect(discord.ui.Select):
@@ -124,7 +167,7 @@ class HelpSelect(discord.ui.Select):
         options = [
             discord.SelectOption(
                 label=data["title"],
-                description=f"View all {data['title']} commands",
+                description=f"View {data['title']} commands",
                 emoji=data["emoji"],
                 value=key
             )
@@ -139,24 +182,39 @@ class HelpSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        key = self.values[0]
-        data = HELP_CATEGORIES[key]
+        embed = build_category_embed(self.values[0])
+        await interaction.response.edit_message(embed=embed, view=self.view)
 
-        embed = make_embed(
-            title=f"{data['emoji']} {data['title']}",
-            description=data["commands"],
-            color=Colors.INFO
+
+class HomeButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Home", emoji="🏠", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(
+            embed=build_home_embed(),
+            view=self.view
         )
 
-        embed.set_footer(text="Pterodactyl Admin • Premium Help System")
 
-        await interaction.response.edit_message(embed=embed, view=self.view)
+class CloseButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Close", emoji="✖️", style=discord.ButtonStyle.danger)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.message.delete()
 
 
 class HelpView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
         self.add_item(HelpSelect())
+        self.add_item(HomeButton())
+        self.add_item(CloseButton())
+
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -168,22 +226,11 @@ class HelpCog(commands.Cog, name="Help"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="help", description="Premium admin help panel.")
+    @app_commands.command(name="help", description="Enterprise admin help panel.")
     @is_owner()
     async def help_cmd(self, interaction: discord.Interaction):
 
-        embed = make_embed(
-            title="🦅 Pterodactyl Admin Panel",
-            description=(
-                "**Enterprise Control System**\n\n"
-                "Select a category below to view full command details.\n\n"
-                "All commands are owner-only and secure."
-            ),
-            color=Colors.INFO,
-        )
-
-        embed.set_footer(text="HYDRFL GAMING • Admin System")
-
+        embed = build_home_embed()
         view = HelpView()
 
         await safe_respond(interaction, embed, view=view, ephemeral=True)
