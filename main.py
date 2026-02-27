@@ -77,6 +77,7 @@ class PterodactylBot(commands.Bot):
             "cogs.users",
             "cogs.servers",
             "cogs.roles",
+            "cogs.manage",
         ]
 
         for cog in cogs:
