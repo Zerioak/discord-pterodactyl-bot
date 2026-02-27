@@ -1,15 +1,22 @@
 """
-cogs/manage.py  –  /manage command group.
+cogs/manage.py  –  /manage servers  (owner-only admin panel)
 
-/manage servers
-  → Premium dropdown of all servers
-  → Select one → gorgeous status embed:
-       🟢/🔴  status  |  CPU  |  Memory  |  Disk  |  Uptime  |  IP:Port
-  → Action buttons: Start · Stop · Restart · Kill · Reinstall · Refresh
+Admin power control works by hitting the CLIENT API with the
+?admin=true query parameter AND the Application API key — this lets
+the bot act on ANY server on the panel, not just servers owned by
+the key holder.
 
-KEY DESIGN:
-  - Application API key  (PTERODACTYL_API_KEY)    → list servers via self.ptero
-  - Client API key       (PTERODACTYL_CLIENT_KEY)  → live stats + power actions
+Fallback: if a server has no identifier in the Application API
+response, we derive it from the UUID (first 8 chars), which is what
+Pterodactyl uses as the short identifier.
+
+Endpoints used:
+  GET  /api/client/servers/{identifier}/resources?admin=true  → live stats
+  POST /api/client/servers/{identifier}/power?admin=true       → power signal
+  POST /api/client/servers/{identifier}/reinstall?admin=true   → reinstall
+
+All requests use PTERODACTYL_API_KEY (Application key) with ?admin=true.
+No separate Client key needed.
 """
 
 from __future__ import annotations
@@ -24,61 +31,72 @@ from discord import app_commands
 from discord.ext import commands
 
 from api_client import PterodactylClient, PterodactylError
-from config import PTERODACTYL_URL, PTERODACTYL_CLIENT_KEY
+from config import PTERODACTYL_URL, PTERODACTYL_API_KEY
 from cogs.utils import is_owner, trunc, fmt_bytes
 
 
 # ══════════════════════════════════════════════════════════════════════════════════
-# Client-API wrapper  (uses PTERODACTYL_CLIENT_KEY)
+# Admin Client-API wrapper
+# Uses the APPLICATION API key + ?admin=true  to control ANY server
 # ══════════════════════════════════════════════════════════════════════════════════
 
-class ClientAPI:
+class AdminClientAPI:
     """
-    Thin async wrapper for /api/client endpoints.
-    Requires a CLIENT API key (Account → API Credentials), NOT the Application key.
+    Wraps /api/client with admin=true so the Application API key
+    can read stats and send power signals for every server on the panel.
     """
 
-    def __init__(self):
-        self._base = f"{PTERODACTYL_URL}/api/client"
-        self._hdrs = {
-            "Authorization": f"Bearer {PTERODACTYL_CLIENT_KEY}",
-            "Accept":        "application/json",
-            "Content-Type":  "application/json",
-        }
+    BASE    = f"{PTERODACTYL_URL}/api/client"
+    HEADERS = {
+        "Authorization": f"Bearer {PTERODACTYL_API_KEY}",
+        "Accept":        "application/json",
+        "Content-Type":  "application/json",
+    }
+    PARAMS  = {"admin": "true"}            # magic that bypasses ownership check
 
-    async def _req(self, method: str, path: str, json: Optional[dict] = None) -> dict:
-        url = f"{self._base}{path}"
+    async def _req(
+        self,
+        method: str,
+        path:   str,
+        json:   Optional[dict] = None,
+    ) -> dict:
+        url = f"{self.BASE}{path}"
+        timeout = aiohttp.ClientTimeout(total=15)
         async with aiohttp.ClientSession(
-            headers=self._hdrs,
-            timeout=aiohttp.ClientTimeout(total=15),
-        ) as s:
-            async with s.request(method, url, json=json) as r:
-                if r.status == 204:
+            headers=self.HEADERS, timeout=timeout
+        ) as sess:
+            async with sess.request(
+                method, url, json=json, params=self.PARAMS
+            ) as resp:
+                if resp.status == 204:
                     return {}
-                txt = await r.text()
+                txt = await resp.text()
                 if not txt.strip():
                     return {}
                 try:
-                    return await r.json(content_type=None)
+                    return await resp.json(content_type=None)
                 except Exception:
-                    return {}
+                    return {"_raw": txt}
 
     async def resources(self, identifier: str) -> dict:
-        """GET /api/client/servers/{identifier}/resources  →  attributes dict"""
+        """Live resource stats for any server."""
         d = await self._req("GET", f"/servers/{identifier}/resources")
         return d.get("attributes", {})
 
-    async def power(self, identifier: str, signal: str) -> None:
-        """POST /api/client/servers/{identifier}/power   signal: start|stop|restart|kill"""
-        await self._req("POST", f"/servers/{identifier}/power", {"signal": signal})
+    async def power(self, identifier: str, signal: str) -> dict:
+        """Send a power signal (start|stop|restart|kill) to any server."""
+        return await self._req(
+            "POST",
+            f"/servers/{identifier}/power",
+            {"signal": signal},
+        )
 
-    async def reinstall(self, identifier: str) -> None:
-        """POST /api/client/servers/{identifier}/reinstall"""
-        await self._req("POST", f"/servers/{identifier}/reinstall")
+    async def reinstall(self, identifier: str) -> dict:
+        """Reinstall any server."""
+        return await self._req("POST", f"/servers/{identifier}/reinstall")
 
 
-# Singleton — one ClientAPI instance for the whole bot lifetime
-_client_api = ClientAPI()
+_api = AdminClientAPI()
 
 
 # ══════════════════════════════════════════════════════════════════════════════════
@@ -90,21 +108,437 @@ def _bar(pct: float, width: int = 12) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def _pct_emoji(pct: float) -> str:
+def _heat(pct: float) -> str:
     if pct >= 90: return "🔴"
     if pct >= 70: return "🟠"
     if pct >= 40: return "🟡"
     return "🟢"
 
 
-def _state_line(state: str) -> tuple[str, discord.Color]:
+def _state(raw: str) -> tuple[str, discord.Color]:
     table = {
         "running":  ("🟢  **ONLINE**",    discord.Color.from_rgb(0, 210, 130)),
         "starting": ("🟡  **STARTING…**", discord.Color.from_rgb(255, 200, 0)),
         "stopping": ("🟠  **STOPPING…**", discord.Color.from_rgb(255, 130, 0)),
-        "offline":  ("🔴  **OFFLINE**",   discord.Color.from_rgb(220, 50, 50)),
+        "offline":  ("🔴  **OFFLINE**",   discord.Color.from_rgb(200, 40, 40)),
     }
-    return table.get(state.lower(), ("⚫  **UNKNOWN**", discord.Color.greyple()))
+    return table.get(raw.lower(), ("⚫  **UNKNOWN**", discord.Color.greyple()))
+
+
+def _uptime(ms: int) -> str:
+    if ms <= 0:
+        return "—"
+    s = ms // 1000
+    m = s // 60;  s %= 60
+    h = m // 60;  m %= 60
+    d = h // 24;  h %= 24
+    parts = []
+    if d: parts.append(f"{d}d")
+    if h: parts.append(f"{h}h")
+    if m: parts.append(f"{m}m")
+    parts.append(f"{s}s")
+    return " ".join(parts[:3])
+
+
+def _mb(b: int) -> str:
+    if b <= 0: return "0 MB"
+    mb = b / 1_048_576
+    return f"{mb / 1024:.2f} GB" if mb >= 1024 else f"{mb:.1f} MB"
+
+
+def _get_identifier(attr: dict) -> str:
+    """
+    Returns the short 8-char identifier Pterodactyl uses for client API calls.
+    The Application API includes 'identifier'; if absent fall back to uuid[:8].
+    """
+    return attr.get("identifier") or attr.get("uuid", "")[:8]
+
+
+def _get_ip(attr: dict) -> str:
+    """Extract primary IP:Port from server attributes."""
+    # Try relationships.allocations first (full object)
+    alloc_data = (
+        attr.get("relationships", {})
+            .get("allocations", {})
+            .get("data", [])
+    )
+    if alloc_data:
+        a = alloc_data[0].get("attributes", {})
+        return f"{a.get('alias') or a.get('ip', '?')}:{a.get('port', '?')}"
+
+    # Try top-level allocation id (minimal response)
+    # In this case we just show what we have
+    return "N/A"
+
+
+# ══════════════════════════════════════════════════════════════════════════════════
+# Premium embed builder
+# ══════════════════════════════════════════════════════════════════════════════════
+
+async def _build_embed(attr: dict) -> discord.Embed:
+    name       = attr.get("name", "Unknown")
+    sid        = attr.get("id", "?")
+    identifier = _get_identifier(attr)
+    ip_port    = _get_ip(attr)
+    limits     = attr.get("limits", {})
+    mem_lim    = limits.get("memory", 0)
+    disk_lim   = limits.get("disk",   0)
+    cpu_lim    = limits.get("cpu",    0)
+
+    # ── Pull live stats ──────────────────────────────────────────────────────────
+    res    = await _api.resources(identifier) if identifier else {}
+    status = res.get("current_state", "offline")
+    stats  = res.get("resources", {})
+
+    cpu_abs = stats.get("cpu_absolute",     0.0)
+    mem_b   = stats.get("memory_bytes",     0)
+    disk_b  = stats.get("disk_bytes",       0)
+    net_rx  = stats.get("network_rx_bytes", 0)
+    net_tx  = stats.get("network_tx_bytes", 0)
+    uptime  = stats.get("uptime",           0)
+
+    cpu_pct  = min(cpu_abs, 100.0)
+    mem_pct  = (mem_b  / (mem_lim  * 1_048_576) * 100) if mem_lim  > 0 else 0.0
+    disk_pct = (disk_b / (disk_lim * 1_048_576) * 100) if disk_lim > 0 else 0.0
+
+    badge, color = _state(status)
+    online       = status == "running"
+
+    # ── Embed frame ──────────────────────────────────────────────────────────────
+    embed = discord.Embed(color=color, timestamp=datetime.datetime.utcnow())
+    embed.set_author(name="PTERODACTYL ADMIN  ·  SERVER CONTROL PANEL")
+    embed.title = f"{'⚡' if online else '💤'}  {name}"
+
+    # ── Header description ───────────────────────────────────────────────────────
+    embed.description = (
+        f"{badge}\n"
+        f"{'━' * 36}\n"
+        f"🌐  **IP / Port**   ` {ip_port} `\n"
+        f"🆔  **Server ID**   ` {sid} `\n"
+        f"🔑  **Identifier**  ` {identifier} `"
+    )
+
+    # ── Resource fields ──────────────────────────────────────────────────────────
+    if online:
+        embed.add_field(
+            name=f"{_heat(cpu_pct)}  CPU",
+            value=(
+                f"` {_bar(cpu_pct)} `\n"
+                f"**{cpu_abs:.1f}%**"
+                + (f"  of {cpu_lim}%" if cpu_lim else "")
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name=f"{_heat(mem_pct)}  Memory",
+            value=(
+                f"` {_bar(mem_pct)} `\n"
+                f"**{_mb(mem_b)}** / {fmt_bytes(mem_lim)}"
+            ),
+            inline=True,
+        )
+        embed.add_field(name="\u200b", value="\u200b", inline=True)   # spacer
+
+        embed.add_field(
+            name=f"{_heat(disk_pct)}  Disk",
+            value=(
+                f"` {_bar(disk_pct)} `\n"
+                f"**{_mb(disk_b)}** / {fmt_bytes(disk_lim)}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="⏱️  Uptime",
+            value=f"**{_uptime(uptime)}**",
+            inline=True,
+        )
+        embed.add_field(
+            name="📡  Network",
+            value=f"▼ {_mb(net_rx)}  ▲ {_mb(net_tx)}",
+            inline=True,
+        )
+    else:
+        # Server offline — show configured limits so it's not empty
+        embed.add_field(
+            name="⚙️  CPU Limit",
+            value=f"**{cpu_lim}%**" if cpu_lim else "Unlimited",
+            inline=True,
+        )
+        embed.add_field(
+            name="💾  Memory",
+            value=fmt_bytes(mem_lim),
+            inline=True,
+        )
+        embed.add_field(
+            name="💿  Disk",
+            value=fmt_bytes(disk_lim),
+            inline=True,
+        )
+
+    embed.set_footer(text=f"🕐 Last updated  •  Admin Panel  •  Server #{sid}")
+    return embed
+
+
+# ══════════════════════════════════════════════════════════════════════════════════
+# Reinstall confirmation
+# ══════════════════════════════════════════════════════════════════════════════════
+
+class _ReinstallConfirm(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=30)
+        self.confirmed = False
+
+    @discord.ui.button(label="⚠️  Yes, wipe & reinstall", style=discord.ButtonStyle.danger)
+    async def yes(self, inter: discord.Interaction, _: discord.ui.Button):
+        self.confirmed = True
+        self.stop()
+        await inter.response.defer()
+
+    @discord.ui.button(label="✖  Cancel", style=discord.ButtonStyle.secondary)
+    async def no(self, inter: discord.Interaction, _: discord.ui.Button):
+        self.confirmed = False
+        self.stop()
+        await inter.response.defer()
+
+
+# ══════════════════════════════════════════════════════════════════════════════════
+# Action buttons  (row 0: power  |  row 1: management)
+# ══════════════════════════════════════════════════════════════════════════════════
+
+class ControlView(discord.ui.View):
+    """Live control panel for a single server."""
+
+    def __init__(self, attr: dict):
+        super().__init__(timeout=600)          # 10 min before buttons expire
+        self._attr = attr
+        self._id   = _get_identifier(attr)
+        self._name = attr.get("name", "Server")
+
+    # ── Internal helpers ─────────────────────────────────────────────────────────
+
+    async def _send_power(
+        self,
+        inter: discord.Interaction,
+        signal: str,
+        label: str,
+    ) -> None:
+        await inter.response.defer(ephemeral=True)
+        try:
+            await _api.power(self._id, signal)
+            await asyncio.sleep(2)
+            fresh = await _build_embed(self._attr)
+            await inter.edit_original_response(embed=fresh, view=self)
+            await inter.followup.send(
+                embed=_ok(f"**{label}** sent to `{self._name}`."),
+                ephemeral=True,
+            )
+        except Exception as exc:
+            await inter.followup.send(embed=_err(str(exc)), ephemeral=True)
+
+    # ── Row 0  ───────────────────────────────────────────────────────────────────
+
+    @discord.ui.button(label="▶  Start",   style=discord.ButtonStyle.success, row=0)
+    async def start(self, inter: discord.Interaction, _: discord.ui.Button):
+        await self._send_power(inter, "start", "Start")
+
+    @discord.ui.button(label="■  Stop",    style=discord.ButtonStyle.danger,  row=0)
+    async def stop(self, inter: discord.Interaction, _: discord.ui.Button):
+        await self._send_power(inter, "stop", "Stop")
+
+    @discord.ui.button(label="↺  Restart", style=discord.ButtonStyle.primary, row=0)
+    async def restart(self, inter: discord.Interaction, _: discord.ui.Button):
+        await self._send_power(inter, "restart", "Restart")
+
+    @discord.ui.button(label="☠  Kill",    style=discord.ButtonStyle.danger,  row=0)
+    async def kill(self, inter: discord.Interaction, _: discord.ui.Button):
+        await self._send_power(inter, "kill", "Kill")
+
+    # ── Row 1  ───────────────────────────────────────────────────────────────────
+
+    @discord.ui.button(label="🔁  Reinstall", style=discord.ButtonStyle.secondary, row=1)
+    async def reinstall(self, inter: discord.Interaction, _: discord.ui.Button):
+        confirm = _ReinstallConfirm()
+        await inter.response.send_message(
+            embed=discord.Embed(
+                title="⚠️  Confirm Reinstall",
+                description=(
+                    f"Reinstall **{self._name}**?\n\n"
+                    "This will **permanently wipe all server files** and\n"
+                    "reinstall the egg from scratch.\n\n"
+                    "**This cannot be undone.**"
+                ),
+                color=discord.Color.from_rgb(255, 100, 0),
+            ),
+            view=confirm,
+            ephemeral=True,
+        )
+        await confirm.wait()
+        if confirm.confirmed:
+            try:
+                await _api.reinstall(self._id)
+                await inter.followup.send(
+                    embed=_ok(f"Reinstall started for `{self._name}`."),
+                    ephemeral=True,
+                )
+            except Exception as exc:
+                await inter.followup.send(embed=_err(str(exc)), ephemeral=True)
+        else:
+            await inter.followup.send(
+                embed=discord.Embed(
+                    description="Reinstall cancelled.",
+                    color=discord.Color.greyple(),
+                ),
+                ephemeral=True,
+            )
+
+    @discord.ui.button(label="🔄  Refresh", style=discord.ButtonStyle.secondary, row=1)
+    async def refresh(self, inter: discord.Interaction, _: discord.ui.Button):
+        await inter.response.defer(ephemeral=True)
+        fresh = await _build_embed(self._attr)
+        await inter.edit_original_response(embed=fresh, view=self)
+        await inter.followup.send(
+            embed=discord.Embed(
+                description="🔄  Stats refreshed.",
+                color=discord.Color.blurple(),
+            ),
+            ephemeral=True,
+        )
+
+
+# ── Small embed helpers ───────────────────────────────────────────────────────────
+
+def _ok(msg: str) -> discord.Embed:
+    return discord.Embed(description=f"✅  {msg}", color=discord.Color.from_rgb(0, 210, 130))
+
+def _err(msg: str) -> discord.Embed:
+    return discord.Embed(description=f"❌  {msg}", color=discord.Color.from_rgb(220, 50, 50))
+
+
+# ══════════════════════════════════════════════════════════════════════════════════
+# Server picker  (dropdown — up to 25 servers)
+# ══════════════════════════════════════════════════════════════════════════════════
+
+class PickerView(discord.ui.View):
+    def __init__(self, servers: list[dict]):
+        super().__init__(timeout=180)
+        # id → attributes lookup
+        self._map = {str(s["attributes"]["id"]): s["attributes"] for s in servers}
+
+        opts = [
+            discord.SelectOption(
+                label=trunc(s["attributes"]["name"], 100),
+                value=str(s["attributes"]["id"]),
+                description=(
+                    f"ID {s['attributes']['id']}  ·  "
+                    f"{_get_identifier(s['attributes'])}"
+                ),
+                emoji="🖥️",
+            )
+            for s in servers[:25]
+        ]
+        sel = discord.ui.Select(
+            placeholder="🔍  Select a server…",
+            options=opts,
+            min_values=1,
+            max_values=1,
+        )
+        sel.callback = self._pick
+        self.add_item(sel)
+
+    async def _pick(self, inter: discord.Interaction):
+        attr = self._map.get(inter.data["values"][0])
+        if not attr:
+            await inter.response.send_message("Server not found.", ephemeral=True)
+            return
+        await inter.response.defer(ephemeral=True)
+        embed = await _build_embed(attr)
+        await inter.followup.send(embed=embed, view=ControlView(attr), ephemeral=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════════
+# COG
+# ══════════════════════════════════════════════════════════════════════════════════
+
+class ManageCog(commands.Cog, name="Manage"):
+
+    def __init__(self, bot: commands.Bot):
+        self.bot   = bot
+        self.ptero: PterodactylClient = bot.ptero  # type: ignore
+
+    manage_group = app_commands.Group(
+        name="manage",
+        description="Admin server management — control any server on the panel.",
+    )
+
+    @manage_group.command(
+        name="servers",
+        description="Open the live admin control panel for any server.",
+    )
+    @is_owner()
+    async def manage_servers(self, inter: discord.Interaction):
+        await inter.response.defer(ephemeral=True)
+
+        # ── Validate config ──────────────────────────────────────────────────────
+        if not PTERODACTYL_API_KEY:
+            await inter.followup.send(
+                embed=discord.Embed(
+                    title="⚙️  Missing Configuration",
+                    description=(
+                        "`PTERODACTYL_API_KEY` is not set in your `.env`.\n"
+                        "Add your Application API key and restart the bot."
+                    ),
+                    color=discord.Color.from_rgb(255, 130, 0),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        # ── Fetch all servers via Application API ────────────────────────────────
+        try:
+            # Include allocations so we get IP:Port without extra calls
+            servers = await self.ptero._paginate(
+                "/servers",
+                params={"include": "allocations"},
+            )
+        except PterodactylError as e:
+            await inter.followup.send(embed=_err(e.message), ephemeral=True)
+            return
+
+        if not servers:
+            await inter.followup.send(
+                embed=discord.Embed(
+                    description="⚠️  No servers found on this panel.",
+                    color=discord.Color.from_rgb(255, 200, 0),
+                ),
+                ephemeral=True,
+            )
+            return
+
+        # ── Header embed ─────────────────────────────────────────────────────────
+        header = discord.Embed(
+            title="🦅  Pterodactyl Admin  ·  Server Control Panel",
+            description=(
+                f"**{len(servers)}** server(s) found on this panel.\n\n"
+                "Pick any server from the dropdown — you'll see its **live stats**\n"
+                "(CPU · Memory · Disk · Uptime · Network · IP) and gain full\n"
+                "power control regardless of who owns the server.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "▶ Start  ·  ■ Stop  ·  ↺ Restart  ·  ☠ Kill  ·  🔁 Reinstall"
+            ),
+            color=discord.Color.from_rgb(88, 101, 242),
+            timestamp=datetime.datetime.utcnow(),
+        )
+        header.set_footer(text="Admin view  ·  All servers  ·  Pterodactyl Admin Bot")
+
+        await inter.followup.send(
+            embed=header,
+            view=PickerView(servers),
+            ephemeral=True,
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(ManageCog(bot))
 
 
 def _uptime(ms: int) -> str:
