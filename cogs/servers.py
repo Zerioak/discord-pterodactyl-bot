@@ -1,19 +1,16 @@
 """
 cogs/servers.py  –  /servers command group.
 
-Server creation wizard (8 steps):
+Server creation wizard (9 steps):
   Step 1  Modal   – Name, Description, External ID
   Step 2  Select  – Owner (user)
   Step 3  Select  – Node
   Step 4  Select  – Nest  (to filter eggs)
-  Step 5  Select  – Egg   (auto-fills docker_image, startup, env vars)
+  Step 5  Select  – Egg   (auto-fills startup, env vars)
+  Step 5b Select  – Docker Image (shows ONLY images available for that egg)
   Step 6  Select  – Allocation (IP:Port)
   Step 7  Modal   – Resources (memory, disk, cpu, swap, io)
   Step 8  Confirm – Review embed → Create / Cancel
-
-KEY FIX: docker_image is auto-filled from the egg's docker_image field.
-         All environment variables are pre-filled with egg defaults.
-         Startup command is taken from the egg.
 """
 
 from __future__ import annotations
@@ -36,23 +33,27 @@ from cogs.utils import (
 class CreationState:
     __slots__ = (
         "name", "description", "external_id",
-        "user_id", "node_id", "nest_id", "egg_id", "alloc_id",
-        "docker_image", "startup", "env_vars",
+        "user_id", "node_id", "nest_id", "egg_id", "egg_name", "alloc_id",
+        "docker_image", "docker_images",
+        "startup", "env_vars",
         "memory", "disk", "cpu", "swap", "io",
     )
 
     def __init__(self):
-        self.name         = ""
-        self.description  = ""
-        self.external_id  = ""
-        self.user_id      = 0
-        self.node_id      = 0
-        self.nest_id      = 0
-        self.egg_id       = 0
-        self.alloc_id     = 0
-        # auto-filled from egg
-        self.docker_image = ""
-        self.startup      = ""
+        self.name          = ""
+        self.description   = ""
+        self.external_id   = ""
+        self.user_id       = 0
+        self.node_id       = 0
+        self.nest_id       = 0
+        self.egg_id        = 0
+        self.egg_name      = ""
+        self.alloc_id      = 0
+        # docker
+        self.docker_image  = ""
+        self.docker_images: dict[str, str] = {}   # {"Display Name": "image:tag"}
+        # startup / env
+        self.startup       = ""
         self.env_vars: dict[str, str] = {}
         # resources
         self.memory = 1024
@@ -65,10 +66,12 @@ class CreationState:
 # ══════════════════════════════════════════════════════════════════════════════════
 # STEP 1 — Modal: basic info
 # ══════════════════════════════════════════════════════════════════════════════════
-class Step1Modal(discord.ui.Modal, title="Create Server — Step 1 of 7"):
-    name        = discord.ui.TextInput(label="Server Name",             placeholder="My Minecraft Server",     max_length=191)
-    description = discord.ui.TextInput(label="Description (optional)",  placeholder="A fun survival server",   required=False, style=discord.TextStyle.paragraph, max_length=255)
-    external_id = discord.ui.TextInput(label="External ID (optional)",  placeholder="ext-001",                 required=False, max_length=191)
+class Step1Modal(discord.ui.Modal, title="Create Server — Step 1"):
+    name        = discord.ui.TextInput(label="Server Name",            placeholder="My Minecraft Server", max_length=191)
+    description = discord.ui.TextInput(label="Description (optional)", placeholder="A fun survival server",
+                                       required=False, style=discord.TextStyle.paragraph, max_length=255)
+    external_id = discord.ui.TextInput(label="External ID (optional)", placeholder="ext-001",
+                                       required=False, max_length=191)
 
     def __init__(self, ptero: PterodactylClient):
         super().__init__()
@@ -89,8 +92,8 @@ class Step1Modal(discord.ui.Modal, title="Create Server — Step 1 of 7"):
             await interaction.followup.send(embed=error_embed("No panel users found. Create a user first."), ephemeral=True)
             return
         embed = make_embed(
-            title="🌐 Create Server — Step 2: Select Owner",
-            description=f"**Server name:** {state.name}\nWho will own this server?",
+            title="🌐 Create Server — Step 2: Owner",
+            description=f"**Server:** {state.name}\nWho will own this server?",
             color=Colors.SERVERS,
         )
         await interaction.followup.send(embed=embed, view=Step2UserSelect(self.ptero, state, users), ephemeral=True)
@@ -128,8 +131,8 @@ class Step2UserSelect(discord.ui.View):
             await interaction.followup.send(embed=error_embed("No nodes found. Create a node first."), ephemeral=True)
             return
         embed = make_embed(
-            title="🌐 Create Server — Step 3: Select Node",
-            description=f"**Server name:** {self.state.name}\nWhich node should host this server?",
+            title="🌐 Create Server — Step 3: Node",
+            description=f"**Server:** {self.state.name}\nWhich node should host this server?",
             color=Colors.SERVERS,
         )
         await interaction.followup.send(embed=embed, view=Step3NodeSelect(self.ptero, self.state, nodes), ephemeral=True)
@@ -167,8 +170,8 @@ class Step3NodeSelect(discord.ui.View):
             await interaction.followup.send(embed=error_embed("No nests found."), ephemeral=True)
             return
         embed = make_embed(
-            title="🌐 Create Server — Step 4: Select Nest",
-            description=f"**Server name:** {self.state.name}\nChoose a nest to browse eggs.",
+            title="🌐 Create Server — Step 4: Nest",
+            description=f"**Server:** {self.state.name}\nChoose a nest to browse eggs.",
             color=Colors.SERVERS,
         )
         await interaction.followup.send(embed=embed, view=Step4NestSelect(self.ptero, self.state, nests), ephemeral=True)
@@ -207,19 +210,17 @@ class Step4NestSelect(discord.ui.View):
             await interaction.followup.send(embed=error_embed("This nest has no eggs. Choose a different nest."), ephemeral=True)
             return
         embed = make_embed(
-            title="🌐 Create Server — Step 5: Select Egg",
-            description=f"**Server name:** {self.state.name}\nChoose the game / software egg.",
+            title="🌐 Create Server — Step 5: Egg",
+            description=f"**Server:** {self.state.name}\nChoose the game / software egg.",
             color=Colors.SERVERS,
         )
         await interaction.followup.send(embed=embed, view=Step5EggSelect(self.ptero, self.state, eggs), ephemeral=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════════
-# STEP 5 — Select: egg  ← THE CRITICAL FIX IS HERE
-# After selection we fetch the full egg details and auto-fill:
-#   • docker_image  (first entry in docker_images dict, or docker_image field)
-#   • startup       (egg's startup command)
-#   • env_vars      (every env variable's default value)
+# STEP 5 — Select: egg
+# Fetches full egg details → stores docker_images dict, startup, env vars
+# Then proceeds to Step 5b (Docker Image picker)
 # ══════════════════════════════════════════════════════════════════════════════════
 class Step5EggSelect(discord.ui.View):
     def __init__(self, ptero, state, eggs):
@@ -243,7 +244,7 @@ class Step5EggSelect(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         self.stop()
 
-        # ── Fetch full egg details ──────────────────────────────────────────────
+        # Fetch full egg details (includes docker_images, variables, startup)
         try:
             egg_detail = await self.ptero.get_egg(self.state.nest_id, egg_id)
         except PterodactylError as e:
@@ -251,33 +252,95 @@ class Step5EggSelect(discord.ui.View):
             return
 
         attr = egg_detail.get("attributes", {})
+        self.state.egg_name = attr.get("name", str(egg_id))
 
-        # ── docker_image: try docker_images dict first, then docker_image field ─
-        docker_images = attr.get("docker_images", {})
-        if docker_images:
-            # docker_images is { "Display Name": "image:tag", ... }
-            # Pick the first value
-            self.state.docker_image = list(docker_images.values())[0]
-        elif attr.get("docker_image"):
-            self.state.docker_image = attr["docker_image"]
-        else:
-            # Last resort fallback — very rarely needed
-            self.state.docker_image = "ghcr.io/pterodactyl/yolks:java_17"
+        # ── Collect all available docker images for this egg ────────────────────
+        docker_images: dict[str, str] = {}
+
+        # Primary source: docker_images dict  {"Java 17": "ghcr.io/...:java_17", ...}
+        raw = attr.get("docker_images", {})
+        if isinstance(raw, dict):
+            docker_images.update(raw)
+
+        # Fallback: single docker_image field
+        if not docker_images and attr.get("docker_image"):
+            img = attr["docker_image"]
+            # Use the tag part as display name  (e.g. "java_17" from "…:java_17")
+            label = img.split(":")[-1] if ":" in img else img
+            docker_images[label] = img
+
+        # Very last resort
+        if not docker_images:
+            docker_images["default"] = "ghcr.io/pterodactyl/yolks:java_17"
+
+        self.state.docker_images = docker_images
 
         # ── startup command ─────────────────────────────────────────────────────
         self.state.startup = attr.get("startup", "")
 
-        # ── environment variables (pre-fill with defaults) ──────────────────────
+        # ── environment variables (pre-fill defaults) ───────────────────────────
         self.state.env_vars = {}
-        vars_data = attr.get("relationships", {}).get("variables", {}).get("data", [])
-        for v in vars_data:
+        for v in attr.get("relationships", {}).get("variables", {}).get("data", []):
             va  = v.get("attributes", {})
             key = va.get("env_variable", "")
             val = va.get("default_value", "")
             if key:
                 self.state.env_vars[key] = val if val is not None else ""
 
-        # ── Fetch free allocations on selected node ─────────────────────────────
+        # ── Proceed to Docker Image picker ──────────────────────────────────────
+        embed = make_embed(
+            title="🌐 Create Server — Step 5b: Docker Image",
+            description=(
+                f"**Server:** {self.state.name}\n"
+                f"**Egg:** `{self.state.egg_name}`\n\n"
+                f"Choose the Docker image for this egg.\n"
+                f"Only images registered for **{self.state.egg_name}** are shown."
+            ),
+            color=Colors.SERVERS,
+        )
+        await interaction.followup.send(
+            embed=embed,
+            view=Step5bDockerSelect(self.ptero, self.state),
+            ephemeral=True,
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════════════
+# STEP 5b — Select: Docker Image
+# Shows ONLY the images that belong to the chosen egg.
+# ══════════════════════════════════════════════════════════════════════════════════
+class Step5bDockerSelect(discord.ui.View):
+    def __init__(self, ptero, state):
+        super().__init__(timeout=180)
+        self.ptero = ptero
+        self.state = state
+
+        opts = []
+        for display_name, image_tag in state.docker_images.items():
+            # Shorten image_tag for description (keep last 80 chars)
+            short = image_tag if len(image_tag) <= 80 else "…" + image_tag[-79:]
+            opts.append(
+                discord.SelectOption(
+                    label=trunc(display_name, 100),
+                    value=image_tag,          # value is the actual image:tag
+                    description=short,
+                )
+            )
+
+        # Discord allows max 25 options per select
+        sel = discord.ui.Select(
+            placeholder="Choose a Docker image…",
+            options=opts[:25],
+        )
+        sel.callback = self._cb
+        self.add_item(sel)
+
+    async def _cb(self, interaction: discord.Interaction):
+        self.state.docker_image = interaction.data["values"][0]
+        await interaction.response.defer(ephemeral=True)
+        self.stop()
+
+        # Fetch free allocations on selected node
         try:
             allocs = await self.ptero.list_allocations(self.state.node_id)
         except PterodactylError as e:
@@ -296,10 +359,10 @@ class Step5EggSelect(discord.ui.View):
             return
 
         embed = make_embed(
-            title="🌐 Create Server — Step 6: Select Allocation",
+            title="🌐 Create Server — Step 6: Allocation",
             description=(
-                f"**Server name:** {self.state.name}\n"
-                f"**Egg:** `{attr.get('name', egg_id)}`\n"
+                f"**Server:** {self.state.name}\n"
+                f"**Egg:** `{self.state.egg_name}`\n"
                 f"**Image:** `{self.state.docker_image}`\n\n"
                 "Choose the IP:Port for this server."
             ),
@@ -336,12 +399,12 @@ class Step6AllocSelect(discord.ui.View):
 # ══════════════════════════════════════════════════════════════════════════════════
 # STEP 7 — Modal: resources
 # ══════════════════════════════════════════════════════════════════════════════════
-class Step7ResourcesModal(discord.ui.Modal, title="Create Server — Step 7 of 7: Resources"):
-    memory = discord.ui.TextInput(label="Memory (MB)  — 0 = unlimited",      default="1024",  placeholder="1024")
-    disk   = discord.ui.TextInput(label="Disk (MB)    — 0 = unlimited",      default="5120",  placeholder="5120")
-    cpu    = discord.ui.TextInput(label="CPU (%)      — 0 = unlimited",      default="100",   placeholder="100")
-    swap   = discord.ui.TextInput(label="Swap (MB)    — 0 = off, -1 = unlimited", default="0", placeholder="0")
-    io     = discord.ui.TextInput(label="IO Weight    — 10 to 1000",         default="500",   placeholder="500")
+class Step7ResourcesModal(discord.ui.Modal, title="Create Server — Resources"):
+    memory = discord.ui.TextInput(label="Memory (MB)  — 0 = unlimited",           default="1024", placeholder="1024")
+    disk   = discord.ui.TextInput(label="Disk (MB)    — 0 = unlimited",           default="5120", placeholder="5120")
+    cpu    = discord.ui.TextInput(label="CPU (%)      — 0 = unlimited",           default="100",  placeholder="100")
+    swap   = discord.ui.TextInput(label="Swap (MB)    — 0 = off, -1 = unlimited", default="0",    placeholder="0")
+    io     = discord.ui.TextInput(label="IO Weight    — 10 to 1000",              default="500",  placeholder="500")
 
     def __init__(self, ptero, state):
         super().__init__()
@@ -365,8 +428,8 @@ class Step7ResourcesModal(discord.ui.Modal, title="Create Server — Step 7 of 7
         embed = make_embed(
             title="🌐 Create Server — Final Confirmation",
             description=(
-                "Please review your server configuration.\n"
-                "Press **Create Server** to deploy, or **Cancel** to abort."
+                "Review your server configuration.\n"
+                "Press **🚀 Create Server** to deploy, or **🚫 Cancel** to abort."
             ),
             color=Colors.SERVERS,
             fields=[
@@ -375,7 +438,7 @@ class Step7ResourcesModal(discord.ui.Modal, title="Create Server — Step 7 of 7
                 ("🔖 External ID",   s.external_id or "—",      True),
                 ("👤 User ID",       str(s.user_id),            True),
                 ("🖥️ Node ID",      str(s.node_id),            True),
-                ("🥚 Egg ID",        str(s.egg_id),             True),
+                ("🥚 Egg",           s.egg_name,                True),
                 ("🔌 Allocation ID", str(s.alloc_id),           True),
                 ("🐳 Docker Image",  trunc(s.docker_image, 80), False),
                 ("💾 Memory",        fmt_bytes(s.memory),       True),
@@ -408,9 +471,9 @@ class Step8ConfirmView(discord.ui.View):
             "name":         s.name,
             "user":         s.user_id,
             "egg":          s.egg_id,
-            "docker_image": s.docker_image,   # ← properly filled from egg
-            "startup":      s.startup,        # ← from egg
-            "environment":  s.env_vars,       # ← pre-filled defaults
+            "docker_image": s.docker_image,
+            "startup":      s.startup,
+            "environment":  s.env_vars,
             "limits": {
                 "memory": s.memory,
                 "swap":   s.swap,
@@ -454,8 +517,7 @@ class Step8ConfirmView(discord.ui.View):
             )
         except PterodactylError as e:
             embed = error_embed(
-                f"Pterodactyl returned an error:\n```\n{e.message}\n```\n"
-                f"HTTP status: `{e.status}`",
+                f"Pterodactyl returned an error:\n```\n{e.message}\n```\nHTTP `{e.status}`",
                 title="❌ Server Creation Failed",
             )
 
@@ -471,15 +533,16 @@ class Step8ConfirmView(discord.ui.View):
 # EDIT MODALS
 # ══════════════════════════════════════════════════════════════════════════════════
 class EditDetailsModal(discord.ui.Modal, title="Edit Server Details"):
-    name        = discord.ui.TextInput(label="Server Name",           max_length=191)
-    description = discord.ui.TextInput(label="Description (optional)", required=False, style=discord.TextStyle.paragraph, max_length=255)
+    name        = discord.ui.TextInput(label="Server Name",            max_length=191)
+    description = discord.ui.TextInput(label="Description (optional)", required=False,
+                                       style=discord.TextStyle.paragraph, max_length=255)
     external_id = discord.ui.TextInput(label="External ID (optional)", required=False, max_length=191)
 
     def __init__(self, ptero, server_id, attr):
         super().__init__()
-        self.ptero     = ptero
-        self.server_id = server_id
-        self._user_id  = attr.get("user", 0)
+        self.ptero           = ptero
+        self.server_id       = server_id
+        self._user_id        = attr.get("user", 0)
         self.name.default        = attr.get("name", "")
         self.description.default = attr.get("description", "")
         self.external_id.default = attr.get("external_id", "")
@@ -488,8 +551,8 @@ class EditDetailsModal(discord.ui.Modal, title="Edit Server Details"):
         await interaction.response.defer(ephemeral=True)
         try:
             payload: dict = {
-                "name":  self.name.value,
-                "user":  self._user_id,
+                "name":        self.name.value,
+                "user":        self._user_id,
                 "description": self.description.value or "",
             }
             if self.external_id.value:
@@ -511,9 +574,9 @@ class EditBuildModal(discord.ui.Modal, title="Edit Server Build / Resources"):
 
     def __init__(self, ptero, server_id, attr):
         super().__init__()
-        self.ptero     = ptero
-        self.server_id = server_id
-        self._alloc_id = attr.get("allocation", 0)
+        self.ptero      = ptero
+        self.server_id  = server_id
+        self._alloc_id  = attr.get("allocation", 0)
         lim = attr.get("limits", {})
         self.memory.default = str(lim.get("memory", 1024))
         self.disk.default   = str(lim.get("disk",   5120))
@@ -546,7 +609,8 @@ class EditBuildModal(discord.ui.Modal, title="Edit Server Build / Resources"):
 
 
 class EditStartupModal(discord.ui.Modal, title="Edit Server Startup"):
-    startup     = discord.ui.TextInput(label="Startup Command", style=discord.TextStyle.paragraph, max_length=1000)
+    startup     = discord.ui.TextInput(label="Startup Command",
+                                       style=discord.TextStyle.paragraph, max_length=1000)
     environment = discord.ui.TextInput(
         label="Environment Variables (KEY=VALUE per line)",
         style=discord.TextStyle.paragraph, required=False,
@@ -589,7 +653,7 @@ class EditStartupModal(discord.ui.Modal, title="Edit Server Startup"):
 
 
 # ══════════════════════════════════════════════════════════════════════════════════
-# Shared helpers
+# Shared helper
 # ══════════════════════════════════════════════════════════════════════════════════
 def _server_select(servers, placeholder="Select a server…") -> discord.ui.Select:
     opts = [
@@ -627,9 +691,9 @@ class ServersCog(commands.Cog, name="Servers"):
                 description=f"Your panel has **{len(servers)}** server(s).",
                 color=Colors.SERVERS,
                 fields=[
-                    ("Total Servers", str(len(servers)),    True),
-                    ("Total Memory",  fmt_bytes(total_mem), True),
-                    ("Total Disk",    fmt_bytes(total_disk),True),
+                    ("Total Servers", str(len(servers)),     True),
+                    ("Total Memory",  fmt_bytes(total_mem),  True),
+                    ("Total Disk",    fmt_bytes(total_disk), True),
                 ],
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -669,7 +733,7 @@ class ServersCog(commands.Cog, name="Servers"):
             await interaction.followup.send(embed=error_embed(e.message), ephemeral=True)
 
     # ── create ────────────────────────────────────────────────────────────────────
-    @servers_group.command(name="create", description="Create a new server (8-step wizard).")
+    @servers_group.command(name="create", description="Create a new server (wizard with Docker image picker).")
     @is_owner()
     async def servers_create(self, interaction: discord.Interaction):
         await interaction.response.send_modal(Step1Modal(self.ptero))
@@ -685,10 +749,12 @@ class ServersCog(commands.Cog, name="Servers"):
                 await interaction.followup.send(embed=warning_embed("No servers found."), ephemeral=True)
                 return
             select = _server_select(servers, "Select a server to edit…")
+
             async def on_sel(inter: discord.Interaction):
                 sid = int(inter.data["values"][0])
                 srv = await self.ptero.get_server(sid)
                 await inter.response.send_modal(EditDetailsModal(self.ptero, sid, srv["attributes"]))
+
             select.callback = on_sel
             view = discord.ui.View(timeout=60)
             view.add_item(select)
@@ -710,10 +776,12 @@ class ServersCog(commands.Cog, name="Servers"):
                 await interaction.followup.send(embed=warning_embed("No servers found."), ephemeral=True)
                 return
             select = _server_select(servers, "Select a server to edit build…")
+
             async def on_sel(inter: discord.Interaction):
                 sid = int(inter.data["values"][0])
                 srv = await self.ptero.get_server(sid)
                 await inter.response.send_modal(EditBuildModal(self.ptero, sid, srv["attributes"]))
+
             select.callback = on_sel
             view = discord.ui.View(timeout=60)
             view.add_item(select)
@@ -735,18 +803,20 @@ class ServersCog(commands.Cog, name="Servers"):
                 await interaction.followup.send(embed=warning_embed("No servers found."), ephemeral=True)
                 return
             select = _server_select(servers, "Select a server to edit startup…")
+
             async def on_sel(inter: discord.Interaction):
-                sid  = int(inter.data["values"][0])
-                srv  = await self.ptero.get_server(sid)
-                attr = srv["attributes"]
-                container   = attr.get("container", {})
-                startup     = container.get("startup_command") or attr.get("startup", "")
-                docker_img  = container.get("image", "")
-                egg_id      = attr.get("egg", 0)
-                env_vars    = container.get("environment", {})
+                sid       = int(inter.data["values"][0])
+                srv       = await self.ptero.get_server(sid)
+                attr      = srv["attributes"]
+                container = attr.get("container", {})
+                startup   = container.get("startup_command") or attr.get("startup", "")
+                docker_img = container.get("image", "")
+                egg_id    = attr.get("egg", 0)
+                env_vars  = container.get("environment", {})
                 await inter.response.send_modal(
                     EditStartupModal(self.ptero, sid, egg_id, docker_img, startup, env_vars)
                 )
+
             select.callback = on_sel
             view = discord.ui.View(timeout=60)
             view.add_item(select)
@@ -768,13 +838,14 @@ class ServersCog(commands.Cog, name="Servers"):
                 await interaction.followup.send(embed=warning_embed("No servers found."), ephemeral=True)
                 return
             select = _server_select(servers, "Select a server to delete…")
+
             async def on_sel(inter: discord.Interaction):
                 sid  = int(inter.data["values"][0])
                 conf = ConfirmView()
                 await inter.response.send_message(
                     embed=warning_embed(
-                        f"Delete server `{sid}`?\n⚠️ **All data will be permanently lost. This cannot be undone.**",
-                        title="⚠️ Confirm Server Deletion",
+                        f"Delete server `{sid}`?\n⚠️ **All data will be permanently lost.**",
+                        title="⚠️ Confirm Deletion",
                     ),
                     view=conf, ephemeral=True,
                 )
@@ -782,13 +853,14 @@ class ServersCog(commands.Cog, name="Servers"):
                 if conf.confirmed:
                     try:
                         await self.ptero.delete_server(sid)
-                        res = success_embed(f"Server `{sid}` has been deleted.", title="🌐 Server Deleted")
+                        res = success_embed(f"Server `{sid}` deleted.", title="🌐 Server Deleted")
                         res.color = Colors.SERVERS
                     except PterodactylError as ex:
                         res = error_embed(ex.message)
                     await inter.edit_original_response(embed=res, view=None)
                 else:
                     await inter.edit_original_response(embed=warning_embed("Deletion cancelled."), view=None)
+
             select.callback = on_sel
             view = discord.ui.View(timeout=60)
             view.add_item(select)
@@ -810,10 +882,11 @@ class ServersCog(commands.Cog, name="Servers"):
                 await interaction.followup.send(embed=warning_embed("No servers found."), ephemeral=True)
                 return
             select = _server_select(servers, "Select a server…")
+
             async def on_sel(inter: discord.Interaction):
-                sid  = int(inter.data["values"][0])
+                sid = int(inter.data["values"][0])
                 await inter.response.defer(ephemeral=True)
-                dbs  = await self.ptero.list_server_databases(sid)
+                dbs = await self.ptero.list_server_databases(sid)
                 embed = make_embed(
                     title=f"🌐 Databases — Server {sid}",
                     description=f"**{len(dbs)}** database(s) found.",
@@ -827,6 +900,7 @@ class ServersCog(commands.Cog, name="Servers"):
                         inline=True,
                     )
                 await inter.followup.send(embed=embed, ephemeral=True)
+
             select.callback = on_sel
             view = discord.ui.View(timeout=60)
             view.add_item(select)
@@ -837,149 +911,95 @@ class ServersCog(commands.Cog, name="Servers"):
         except PterodactylError as e:
             await interaction.followup.send(embed=error_embed(e.message), ephemeral=True)
 
-# ─────────────────────────────────────────────────────────────
-    # SUSPEND
-    # ─────────────────────────────────────────────────────────────
+    # ── suspend ───────────────────────────────────────────────────────────────────
     @servers_group.command(name="suspend", description="Suspend a server.")
     @is_owner()
     async def servers_suspend(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-
         try:
             servers = await self.ptero.list_servers()
             if not servers:
-                await interaction.followup.send(
-                    embed=warning_embed("No servers found."),
-                    ephemeral=True
-                )
+                await interaction.followup.send(embed=warning_embed("No servers found."), ephemeral=True)
                 return
-
             select = _server_select(servers, "Select a server to suspend…")
 
-            async def on_select(inter: discord.Interaction):
-                sid = int(inter.data["values"][0])
-
-                confirm = ConfirmView()
+            async def on_sel(inter: discord.Interaction):
+                sid  = int(inter.data["values"][0])
+                conf = ConfirmView()
                 await inter.response.send_message(
                     embed=warning_embed(
-                        f"Are you sure you want to suspend server `{sid}`?\n\n"
-                        "⚠️ Users will NOT be able to start it.",
-                        title="⚠ Confirm Suspension"
+                        f"Suspend server `{sid}`?\nUsers will **NOT** be able to start it.",
+                        title="⚠️ Confirm Suspension",
                     ),
-                    view=confirm,
-                    ephemeral=True
+                    view=conf, ephemeral=True,
                 )
-
-                await confirm.wait()
-
-                if confirm.confirmed:
+                await conf.wait()
+                if conf.confirmed:
                     try:
                         await self.ptero.suspend_server(sid)
-                        embed = success_embed(
-                            f"Server `{sid}` has been suspended.",
-                            title="🔴 Server Suspended"
-                        )
-                        embed.color = Colors.SERVERS
-                    except PterodactylError as e:
-                        embed = error_embed(e.message)
+                        res = success_embed(f"Server `{sid}` suspended.", title="🔴 Server Suspended")
+                        res.color = Colors.SERVERS
+                    except PterodactylError as ex:
+                        res = error_embed(ex.message)
+                    await inter.edit_original_response(embed=res, view=None)
                 else:
-                    embed = warning_embed("Suspension cancelled.")
+                    await inter.edit_original_response(embed=warning_embed("Suspension cancelled."), view=None)
 
-                await inter.edit_original_response(embed=embed, view=None)
-
-            select.callback = on_select
-
+            select.callback = on_sel
             view = discord.ui.View(timeout=60)
             view.add_item(select)
-
             await interaction.followup.send(
-                embed=make_embed(
-                    "🔴 Suspend Server",
-                    "Select a server:",
-                    color=Colors.SERVERS
-                ),
-                view=view,
-                ephemeral=True
+                embed=make_embed("🔴 Suspend Server", "Select a server:", color=Colors.SERVERS),
+                view=view, ephemeral=True,
             )
-
         except PterodactylError as e:
-            await interaction.followup.send(
-                embed=error_embed(e.message),
-                ephemeral=True
-            )
+            await interaction.followup.send(embed=error_embed(e.message), ephemeral=True)
 
-
-    # ─────────────────────────────────────────────────────────────
-    # UNSUSPEND
-    # ─────────────────────────────────────────────────────────────
+    # ── unsuspend ─────────────────────────────────────────────────────────────────
     @servers_group.command(name="unsuspend", description="Unsuspend a server.")
     @is_owner()
     async def servers_unsuspend(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-
         try:
             servers = await self.ptero.list_servers()
             if not servers:
-                await interaction.followup.send(
-                    embed=warning_embed("No servers found."),
-                    ephemeral=True
-                )
+                await interaction.followup.send(embed=warning_embed("No servers found."), ephemeral=True)
                 return
-
             select = _server_select(servers, "Select a server to unsuspend…")
 
-            async def on_select(inter: discord.Interaction):
-                sid = int(inter.data["values"][0])
-
-                confirm = ConfirmView()
+            async def on_sel(inter: discord.Interaction):
+                sid  = int(inter.data["values"][0])
+                conf = ConfirmView()
                 await inter.response.send_message(
                     embed=warning_embed(
-                        f"Are you sure you want to unsuspend server `{sid}`?\n\n"
-                        "Users will be able to start it again.",
-                        title="⚠ Confirm Unsuspend"
+                        f"Unsuspend server `{sid}`?\nUsers will be able to start it again.",
+                        title="⚠️ Confirm Unsuspend",
                     ),
-                    view=confirm,
-                    ephemeral=True
+                    view=conf, ephemeral=True,
                 )
-
-                await confirm.wait()
-
-                if confirm.confirmed:
+                await conf.wait()
+                if conf.confirmed:
                     try:
                         await self.ptero.unsuspend_server(sid)
-                        embed = success_embed(
-                            f"Server `{sid}` has been unsuspended.",
-                            title="🟢 Server Unsuspended"
-                        )
-                        embed.color = Colors.SERVERS
-                    except PterodactylError as e:
-                        embed = error_embed(e.message)
+                        res = success_embed(f"Server `{sid}` unsuspended.", title="🟢 Server Unsuspended")
+                        res.color = Colors.SERVERS
+                    except PterodactylError as ex:
+                        res = error_embed(ex.message)
+                    await inter.edit_original_response(embed=res, view=None)
                 else:
-                    embed = warning_embed("Unsuspend cancelled.")
+                    await inter.edit_original_response(embed=warning_embed("Unsuspend cancelled."), view=None)
 
-                await inter.edit_original_response(embed=embed, view=None)
-
-            select.callback = on_select
-
+            select.callback = on_sel
             view = discord.ui.View(timeout=60)
             view.add_item(select)
-
             await interaction.followup.send(
-                embed=make_embed(
-                    "🟢 Unsuspend Server",
-                    "Select a server:",
-                    color=Colors.SERVERS
-                ),
-                view=view,
-                ephemeral=True
+                embed=make_embed("🟢 Unsuspend Server", "Select a server:", color=Colors.SERVERS),
+                view=view, ephemeral=True,
             )
-
         except PterodactylError as e:
-            await interaction.followup.send(
-                embed=error_embed(e.message),
-                ephemeral=True
-            )
+            await interaction.followup.send(embed=error_embed(e.message), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(ServersCog(bot))
+
