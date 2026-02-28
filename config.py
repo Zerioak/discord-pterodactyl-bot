@@ -33,6 +33,6 @@ class Colors:
     INFO     = discord.Color.blurple()
 
 # ── Meta ─────────────────────────────────────────────────────────────────────────
-BOT_NAME    = "Made by ♥️ @zerioak"
-BOT_VERSION = "1.0.0"
+BOT_NAME    = "Pterodactyl Panel bot"
+BOT_VERSION = "1.0.1"
 FOOTER_TEXT = f"{BOT_NAME} v{BOT_VERSION}"
