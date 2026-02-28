@@ -8,6 +8,7 @@ BUILT WITH DISCORD.PY 2.X USING MODERN SLASH COMMANDS.
 📦 VERSIONS
 
 V1 — STABLE RELEASE ✅  
+V1 — Updated to 1.0.0 to 1.0.1
 V2 — MAJOR UPGRADE COMING SOON 🚀  
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -29,6 +30,7 @@ MANAGE EVERYTHING DIRECTLY FROM DISCORD:
 • ROLES  
 • SUSPEND / UNSUSPEND  
 • SERVER CREATION WIZARD (AUTO EGG CONFIG)  
+• MANAGE SERVER REAL TIME RESOURCES SHOW 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -124,6 +126,9 @@ create
 edit  
 delete  
 
+### /manage
+manage
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 📂 PROJECT STRUCTURE
@@ -147,6 +152,7 @@ ptero-bot/
     ├── servers.py
     ├── roles.py
     └── server_suspend.py
+    ├── manage.py
 ```
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -166,7 +172,12 @@ V1
 - FULL ADMIN MANAGEMENT  
 - SUSPEND / UNSUSPEND  
 - AUTO EGG CONFIGURATION  
-- PRODUCTION READY  
+- PRODUCTION READY
+
+V1 
+- Added /manage for managing the server
+- With start stop button
+- And Real Time Resources Usage
 
 V2 (COMING SOON 🚀)  
 - INTERACTIVE HELP UI  
