@@ -14,8 +14,9 @@ DISCORD_TOKEN: str = os.getenv("DISCORD_TOKEN", "")
 OWNER_ID: int      = int(os.getenv("OWNER_ID", "0"))
 
 # ── Pterodactyl ──────────────────────────────────────────────────────────────────
-PTERODACTYL_URL: str     = os.getenv("PTERODACTYL_URL", "").rstrip("/")
-PTERODACTYL_API_KEY: str = os.getenv("PTERODACTYL_API_KEY", "")
+PTERODACTYL_URL: str        = os.getenv("PTERODACTYL_URL", "").rstrip("/")
+PTERODACTYL_API_KEY: str    = os.getenv("PTERODACTYL_API_KEY", "")
+PTERODACTYL_CLIENT_KEY: str = os.getenv("PTERODACTYL_CLIENT_KEY", "")
 
 # ── Embed colours ────────────────────────────────────────────────────────────────
 class Colors:
@@ -33,6 +34,6 @@ class Colors:
     INFO     = discord.Color.blurple()
 
 # ── Meta ─────────────────────────────────────────────────────────────────────────
-BOT_NAME    = "Pterodactyl Panel bot"
+BOT_NAME    = "Pterodactyl Panel Bot"
 BOT_VERSION = "1.0.1"
 FOOTER_TEXT = f"{BOT_NAME} v{BOT_VERSION}"
